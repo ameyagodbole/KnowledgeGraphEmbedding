@@ -19,11 +19,12 @@ from torch.utils.data import DataLoader
 from dataloader import TestDataset
 
 class KGEModel(nn.Module):
-    def __init__(self, model_name, nentity, nrelation, hidden_dim, gamma, 
+    def __init__(self, model_name, nentity_old, nentity_new, nrelation, hidden_dim, gamma,
                  double_entity_embedding=False, double_relation_embedding=False):
         super(KGEModel, self).__init__()
         self.model_name = model_name
-        self.nentity = nentity
+        self.nentity_old = nentity_old
+        self.nentity_new = nentity_new
         self.nrelation = nrelation
         self.hidden_dim = hidden_dim
         self.epsilon = 2.0
@@ -40,13 +41,23 @@ class KGEModel(nn.Module):
         
         self.entity_dim = hidden_dim*2 if double_entity_embedding else hidden_dim
         self.relation_dim = hidden_dim*2 if double_relation_embedding else hidden_dim
-        
-        self.entity_embedding = nn.Parameter(torch.zeros(nentity, self.entity_dim))
+
+        if nentity_old > 0:
+            self.entity_embedding_old = nn.Parameter(torch.zeros(nentity_old, self.entity_dim), requires_grad=False)
+            nn.init.uniform_(
+                tensor=self.entity_embedding_old,
+                a=-self.embedding_range.item(),
+                b=self.embedding_range.item()
+            )
+        else:
+            self.entity_embedding_old = nn.Parameter(torch.empty([0, self.entity_dim]), requires_grad=False)
+        self.entity_embedding_new = nn.Parameter(torch.zeros(nentity_new, self.entity_dim), requires_grad=True)
         nn.init.uniform_(
-            tensor=self.entity_embedding, 
-            a=-self.embedding_range.item(), 
+            tensor=self.entity_embedding_new,
+            a=-self.embedding_range.item(),
             b=self.embedding_range.item()
         )
+        self.entity_embedding = torch.cat([self.entity_embedding_old, self.entity_embedding_new], dim=0)
         
         self.relation_embedding = nn.Parameter(torch.zeros(nrelation, self.relation_dim))
         nn.init.uniform_(
@@ -78,7 +89,7 @@ class KGEModel(nn.Module):
         Because negative samples and positive samples usually share two elements 
         in their triple ((head, relation) or (relation, tail)).
         '''
-
+        self.entity_embedding = torch.cat([self.entity_embedding_old, self.entity_embedding_new], dim=0)
         if mode == 'single':
             batch_size, negative_sample_size = sample.size(0), 1
             
@@ -354,7 +365,7 @@ class KGEModel(nn.Module):
                     'head-batch'
                 ), 
                 batch_size=args.test_batch_size,
-                num_workers=max(1, args.cpu_num//2), 
+                num_workers=0,
                 collate_fn=TestDataset.collate_fn
             )
 
@@ -367,7 +378,7 @@ class KGEModel(nn.Module):
                     'tail-batch'
                 ), 
                 batch_size=args.test_batch_size,
-                num_workers=max(1, args.cpu_num//2), 
+                num_workers=0,
                 collate_fn=TestDataset.collate_fn
             )
             
