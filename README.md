@@ -1,3 +1,64 @@
+# Online experiments for RotatE 
+
+Code for RotatE experiments from the EMNLP-Findings paper -- [Probabilistic Case-based Reasoning for Open-World Knowledge Graph Completion
+](https://arxiv.org/abs/2010.03548)
+
+```bash
+# WN18RR
+
+PCENT=0.1
+python -u codes/run.py --cuda \
+    --do_train \
+    --do_valid \
+    --do_test \
+    --data_path data/wn18rr/ \
+    --model RotatE \
+    -n 1024 -b 512 -d 500 \
+    -g 6.0 -a 0.5 -adv \
+    -lr 0.00005 --max_steps 50000 \
+    --ft_steps 10000 --valid_steps 5000 \
+    -save saved_models/RotatE_wn18rr_nbh_"$PCENT"_smart_init --test_batch_size 8 \
+    -de \
+    --ft_all_entity_embeddings \
+    --smart_init \
+    --stream_init_proportion 0.5 \
+    --n_stream_updates 10 \
+    --frac_old_train_samples $PCENT \
+    --sample_nbh \
+    --stream_seed 42
+```
+
+```bash
+# FB122
+
+PCENT=0.1
+python -u codes/run.py --cuda \
+    --do_train \
+    --do_valid \
+    --do_test \
+    --data_path data/FB122/ \
+    --test_file_name testI.txt \
+    --model RotatE \
+    -n 256 -b 1024 -d 1000 \
+    -g 9.0 -a 1.0 -adv \
+    -lr 0.00005 --max_steps 60000 \
+    --ft_steps 5000 --valid_steps 5000 \
+    -save saved_models/RotatE_fb122_nbh_"$PCENT"_smart_init --test_batch_size 16 \
+    -de \
+    --ft_all_entity_embeddings \
+    --smart_init \
+    --stream_init_proportion 0.5 \
+    --n_stream_updates 10  \
+    --frac_old_train_samples $PCENT \
+    --sample_nbh \
+    --stream_seed 42
+```
+
+To freeze old embeddings: skip the flag `--ft_all_entity_embeddings`
+
+To use random initialization of new entity embeddings: skip the flag `--smart_init`
+
+To use a different percentage of the old training triples: set `PCENT` to the appropriate fraction
 
 # RotatE: Knowledge Graph Embedding by Relational Rotation in Complex Space
 **Introduction**
