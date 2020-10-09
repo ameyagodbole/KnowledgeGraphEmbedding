@@ -32,11 +32,29 @@ class KBStream:
         if test_file_name is None or test_file_name == '':
             test_file_name = 'test.txt'
 
-        self.train_triples = read_triple_raw(os.path.join(data_path, 'train.txt'))
-        self.valid_triples = read_triple_raw(os.path.join(data_path, 'valid.txt'))
-        self.test_triples = read_triple_raw(os.path.join(data_path, test_file_name))
+        # Used for filtering out inverse relations since RotatE adds them explicitly
+        dataset_name = "nell" if "nell" in self.data_path.lower() else ""
+        self.train_triples = [triple for triple in read_triple_raw(os.path.join(data_path, 'train.txt'))
+                              if not self.is_inv_relation(triple[1], dataset_name=dataset_name)]
+        self.valid_triples = [triple for triple in read_triple_raw(os.path.join(data_path, 'valid.txt'))
+                              if not self.is_inv_relation(triple[1], dataset_name=dataset_name)]
+        self.test_triples = [triple for triple in read_triple_raw(os.path.join(data_path, test_file_name))
+                             if not self.is_inv_relation(triple[1], dataset_name=dataset_name)]
         self.kb_state = {'entity2id': {}, 'relation2id': {},
                          'train_triples': [], 'valid_triples': [], 'test_triples': []}
+
+    @staticmethod
+    def is_inv_relation(r, dataset_name):
+        if dataset_name == "nell":
+            if r[-4:] == "_inv":
+                return True
+            else:
+                return False
+        else:
+            if r[:2] == "__" or r[:2] == "_/":
+                return True
+            else:
+                return False
 
     def get_init_kb(self):
         # INIT
