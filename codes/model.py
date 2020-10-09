@@ -20,7 +20,7 @@ from dataloader import TestDataset
 
 class KGEModel(nn.Module):
     def __init__(self, model_name, nentity_old, nentity_new, nrelation, hidden_dim, gamma,
-                 double_entity_embedding=False, double_relation_embedding=False):
+                 double_entity_embedding=False, double_relation_embedding=False, train_old_e=False):
         super(KGEModel, self).__init__()
         self.model_name = model_name
         self.nentity_old = nentity_old
@@ -43,14 +43,14 @@ class KGEModel(nn.Module):
         self.relation_dim = hidden_dim*2 if double_relation_embedding else hidden_dim
 
         if nentity_old > 0:
-            self.entity_embedding_old = nn.Parameter(torch.zeros(nentity_old, self.entity_dim), requires_grad=False)
+            self.entity_embedding_old = nn.Parameter(torch.zeros(nentity_old, self.entity_dim), requires_grad=train_old_e)
             nn.init.uniform_(
                 tensor=self.entity_embedding_old,
                 a=-self.embedding_range.item(),
                 b=self.embedding_range.item()
             )
         else:
-            self.entity_embedding_old = nn.Parameter(torch.empty([0, self.entity_dim]), requires_grad=False)
+            self.entity_embedding_old = nn.Parameter(torch.empty([0, self.entity_dim]), requires_grad=train_old_e)
         self.entity_embedding_new = nn.Parameter(torch.zeros(nentity_new, self.entity_dim), requires_grad=True)
         nn.init.uniform_(
             tensor=self.entity_embedding_new,
@@ -90,6 +90,7 @@ class KGEModel(nn.Module):
         in their triple ((head, relation) or (relation, tail)).
         '''
         self.entity_embedding = torch.cat([self.entity_embedding_old, self.entity_embedding_new], dim=0)
+        assert self.entity_embedding.shape[0] == (self.nentity_new + self.nentity_old)
         if mode == 'single':
             batch_size, negative_sample_size = sample.size(0), 1
             
@@ -154,7 +155,23 @@ class KGEModel(nn.Module):
                 dim=0, 
                 index=tail_part.view(-1)
             ).view(batch_size, negative_sample_size, -1)
-            
+
+        elif mode == 'init':
+
+            head = torch.index_select(
+                self.entity_embedding,
+                dim=0,
+                index=sample[:, 0]
+            )
+
+            relation = torch.index_select(
+                self.relation_embedding,
+                dim=0,
+                index=sample[:, 1]
+            )
+
+            return self.RotatE_init(head, relation)
+
         else:
             raise ValueError('mode %s not supported' % mode)
             
@@ -237,6 +254,24 @@ class KGEModel(nn.Module):
 
         score = self.gamma.item() - score.sum(dim = 2)
         return score
+
+    def RotatE_init(self, head, relation):
+        pi = 3.14159265358979323846
+
+        re_head, im_head = torch.chunk(head, 2, dim=1)
+
+        # Make phases of relations uniformly distributed in [-pi, pi]
+
+        phase_relation = relation / (self.embedding_range.item() / pi)
+
+        re_relation = torch.cos(phase_relation)
+        im_relation = torch.sin(phase_relation)
+
+        re_tail = re_head * re_relation - im_head * im_relation
+        im_tail = re_head * im_relation + im_head * re_relation
+
+        tail = torch.cat([re_tail, im_tail], dim=1)
+        return tail
 
     def pRotatE(self, head, relation, tail, mode):
         pi = 3.14159262358979323846
@@ -437,3 +472,61 @@ class KGEModel(nn.Module):
                 metrics[metric] = sum([log[metric] for log in logs])/len(logs)
 
         return metrics
+
+    @staticmethod
+    def edge_init(model, test_triples, nrelation_old, nentity_old, nentity_new, args):
+        '''
+        Evaluate the model on test or valid datasets
+        '''
+
+        model.eval()
+
+        useful_triples = [triple for triple in test_triples
+                          if (triple[0] < nentity_old and triple[1] < nrelation_old and triple[2] >= nentity_old)]
+        useful_triples += [(triple[2], triple[1], triple[0]) for triple in test_triples
+                           if (triple[0] >= nentity_old and triple[1] < nrelation_old and triple[2] < nentity_old)]
+        internal_triples = [list(triple) for triple in test_triples
+                            if (triple[0] >= nentity_old and triple[2] >= nentity_old)]
+        logging.info(f"sanity chk: len(useful_triples):{len(useful_triples)} "
+                     f"({len(useful_triples) + len(internal_triples)})")
+        useful_triples = sorted(set(useful_triples), key=lambda t: t[2])
+
+        all_new_edges = torch.LongTensor(useful_triples)
+        samples, labels = all_new_edges[:, :2], all_new_edges[:, 2]
+
+        res = []
+
+        total_steps = int(np.ceil(len(labels)/args.test_batch_size))
+
+        with torch.no_grad():
+            for step in range(total_steps):
+                sample = samples[step*args.test_batch_size:(step+1)*args.test_batch_size]
+                if args.cuda:
+                    sample = sample.cuda()
+
+                batch_size = sample.size(0)
+
+                tail_em = model(sample, mode='init')
+                tail_em = tail_em.cpu()
+                assert tail_em.shape[0] == batch_size
+                res.append(tail_em)
+
+                if step % args.test_log_steps == 0:
+                    logging.info('Generating init embeddings... (%d/%d)' % (step, total_steps))
+
+            res = torch.cat(res, dim=0)
+            assert res.shape[0] == len(labels)
+            unique_labels = set(torch.unique(labels).tolist())
+            logging.info(f"len(unique_labels): {len(unique_labels)}")
+            final_res = []
+            for cur_label in range(nentity_old, nentity_old + nentity_new):
+                if cur_label in unique_labels:
+                    final_res.append(torch.mean(res[labels == cur_label], dim=0, keepdim=True))
+                else:
+                    final_res.append(model.entity_embedding[cur_label, :].cpu().view([1, -1]))
+                assert final_res[-1].dim() == 2 and final_res[-1].shape[0] > 0
+
+            final_res = torch.cat(final_res, dim=0)
+            if args.cuda:
+                final_res = final_res.cuda()
+            return final_res

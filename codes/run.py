@@ -61,6 +61,8 @@ def parse_args(args=None):
     parser.add_argument('-lr', '--learning_rate', default=0.0001, type=float)
     parser.add_argument('-cpu', '--cpu_num', default=10, type=int)
     parser.add_argument('-init', '--init_checkpoint', default=None, type=str)
+    parser.add_argument('--ft_all_entity_embeddings', action='store_true')
+    parser.add_argument('--smart_init', action='store_true')
     parser.add_argument('-save', '--save_path', default=None, type=str)
     parser.add_argument('--max_steps', default=100000, type=int)
     parser.add_argument('--ft_steps', default=100000, type=int)
@@ -172,7 +174,8 @@ def main_ops(args, entity2id, relation2id, all_true_triples, new_train_triples, 
         hidden_dim=args.hidden_dim,
         gamma=args.gamma,
         double_entity_embedding=args.double_entity_embedding,
-        double_relation_embedding=args.double_relation_embedding
+        double_relation_embedding=args.double_relation_embedding,
+        train_old_e=args.ft_all_entity_embeddings
     )
 
     logging.info('Model Parameter Configuration:')
@@ -226,10 +229,30 @@ def main_ops(args, entity2id, relation2id, all_true_triples, new_train_triples, 
     elif batch_step > 0:
         # Restore model from checkpoint directory
         logging.info('Loading checkpoint %s...' % os.path.join(args.save_path, f'checkpoint_stream_step_{batch_step-1}'))
-        checkpoint = torch.load(os.path.join(args.save_path, f'checkpoint_stream_step_{batch_step-1}'))
+        device = torch.device('cuda') if args.cuda else torch.device('cpu')
+        checkpoint = torch.load(os.path.join(args.save_path, f'checkpoint_stream_step_{batch_step-1}'),
+                                    map_location=device)
         init_step = checkpoint['step']
         # Adjust for changed vocab size
         # if nentity > checkpoint['model_state_dict']['entity_embedding'].shape[0]:
+
+        k_oe, k_ne, k_r = None, None, None
+        old_e_embed_shape, new_e_embed_shape = checkpoint['model_state_dict']['entity_embedding_old'].shape, \
+                                               checkpoint['model_state_dict']['entity_embedding_new'].shape
+        old_r_embed_shape = checkpoint['model_state_dict']['relation_embedding'].shape
+        for _k, _v in checkpoint['optimizer_state_dict']['state'].items():
+            if _v['exp_avg'].shape == old_r_embed_shape:
+                k_r = _k
+                continue
+            if _v['exp_avg'].shape == old_e_embed_shape:
+                k_oe = _k
+                continue
+            if _v['exp_avg'].shape == new_e_embed_shape:
+                k_ne = _k
+                continue
+            logging.warning(f"Unassigned key for tensot of size: {_v.shape}")
+        logging.info(f"k_oe:{k_oe} k_ne:{k_ne} k_r:{k_r}")
+
         if nentity_new > 0:
             ###################
             # WORKING_VERSION #
@@ -262,52 +285,49 @@ def main_ops(args, entity2id, relation2id, all_true_triples, new_train_triples, 
             ###################
             print(f'{kge_model.entity_embedding.shape} {kge_model.entity_embedding.is_leaf} {kge_model.entity_embedding.requires_grad}')
             kge_model.entity_embedding_old.data = torch.cat([checkpoint['model_state_dict']['entity_embedding_old'], checkpoint['model_state_dict']['entity_embedding_new']], dim=0)
-            old_e_embed_shape = checkpoint['model_state_dict']['entity_embedding_new'].shape
             del checkpoint['model_state_dict']['entity_embedding_old']
             del checkpoint['model_state_dict']['entity_embedding_new']
             print(
                 f'{kge_model.entity_embedding.shape} {kge_model.entity_embedding.is_leaf} {kge_model.entity_embedding.requires_grad}')
-            if len(checkpoint['optimizer_state_dict']['state'].keys()) > 0:
-                k1, k2 = checkpoint['optimizer_state_dict']['state'].keys()
-                if checkpoint['optimizer_state_dict']['state'][k1]['exp_avg'].shape == old_e_embed_shape:
-                    checkpoint['optimizer_state_dict']['state'][k1]['exp_avg'] = torch.zeros_like(kge_model.entity_embedding_new).detach()
-                    checkpoint['optimizer_state_dict']['state'][k1]['exp_avg_sq'] = torch.zeros_like(kge_model.entity_embedding_new).detach()
-                elif checkpoint['optimizer_state_dict']['state'][k2]['exp_avg'].shape == old_embed_shape:
-                    checkpoint['optimizer_state_dict']['state'][k2]['exp_avg'] = torch.zeros_like(kge_model.entity_embedding_new).detach()
-                    checkpoint['optimizer_state_dict']['state'][k2]['exp_avg_sq'] = torch.zeros_like(kge_model.entity_embedding_new).detach()
-                else:
-                    raise ValueError("Tensor shape mismatch")
 
+            if k_oe is not None and k_ne is not None:
+                if args.ft_all_entity_embeddings:
+                    temp_tensor = torch.zeros_like(kge_model.entity_embedding_old)
+                    temp_tensor[:old_e_embed_shape[0]] = checkpoint['optimizer_state_dict']['state'][k_oe]['exp_avg']
+                    temp_tensor[old_e_embed_shape[0]:] = checkpoint['optimizer_state_dict']['state'][k_ne]['exp_avg']
+                    checkpoint['optimizer_state_dict']['state'][k_oe]['exp_avg'] = temp_tensor.detach()
+                    temp_tensor = torch.zeros_like(kge_model.entity_embedding_old)
+                    temp_tensor[:old_e_embed_shape[0]] = checkpoint['optimizer_state_dict']['state'][k_oe]['exp_avg_sq']
+                    temp_tensor[old_e_embed_shape[0]:] = checkpoint['optimizer_state_dict']['state'][k_ne]['exp_avg_sq']
+                    checkpoint['optimizer_state_dict']['state'][k_oe]['exp_avg_sq'] = temp_tensor.detach()
+            if k_ne is not None:
+                checkpoint['optimizer_state_dict']['state'][k_ne]['exp_avg'] = torch.zeros_like(kge_model.entity_embedding_new).detach()
+                checkpoint['optimizer_state_dict']['state'][k_ne]['exp_avg_sq'] = torch.zeros_like(kge_model.entity_embedding_new).detach()
+
+        nrelation_old = old_r_embed_shape[0]
         if nrelation > checkpoint['model_state_dict']['relation_embedding'].shape[0]:
             # new_r_embed = kge_model.relation_embedding
             # ckpt_r_embed = checkpoint['model_state_dict']['relation_embedding']
             # new_r_embed[:ckpt_r_embed.shape[0]] = ckpt_r_embed
             # checkpoint['model_state_dict']['relation_embedding'] = new_r_embed.detach().requires_grad_(True)
-            old_embed_shape = checkpoint['model_state_dict']['relation_embedding'].shape
             print(f'{kge_model.relation_embedding.shape} {kge_model.relation_embedding.is_leaf} {kge_model.relation_embedding.requires_grad}')
-            kge_model.relation_embedding.data[:old_embed_shape[0]] = checkpoint['model_state_dict']['relation_embedding']
+            kge_model.relation_embedding.data[:nrelation_old] = checkpoint['model_state_dict']['relation_embedding']
             del checkpoint['model_state_dict']['relation_embedding']
             print(f'{kge_model.relation_embedding.shape} {kge_model.relation_embedding.is_leaf} {kge_model.relation_embedding.requires_grad}')
-            if len(checkpoint['optimizer_state_dict']['state'].keys()) > 0:
-                k1, k2 = checkpoint['optimizer_state_dict']['state'].keys()
-                if checkpoint['optimizer_state_dict']['state'][k1]['exp_avg'].shape == old_embed_shape:
-                    temp_tensor = torch.zeros_like(kge_model.relation_embedding)
-                    temp_tensor[:old_embed_shape[0]] = checkpoint['optimizer_state_dict']['state'][k1]['exp_avg']
-                    checkpoint['optimizer_state_dict']['state'][k1]['exp_avg'] = temp_tensor.detach()
-                    temp_tensor = torch.zeros_like(kge_model.relation_embedding)
-                    temp_tensor[:old_embed_shape[0]] = checkpoint['optimizer_state_dict']['state'][k1]['exp_avg_sq']
-                    checkpoint['optimizer_state_dict']['state'][k1]['exp_avg_sq'] = temp_tensor.detach()
-                elif checkpoint['optimizer_state_dict']['state'][k2]['exp_avg'].shape == old_embed_shape:
-                    temp_tensor = torch.zeros_like(kge_model.relation_embedding)
-                    temp_tensor[:old_embed_shape[0]] = checkpoint['optimizer_state_dict']['state'][k2]['exp_avg']
-                    checkpoint['optimizer_state_dict']['state'][k2]['exp_avg'] = temp_tensor.detach()
-                    temp_tensor = torch.zeros_like(kge_model.relation_embedding)
-                    temp_tensor[:old_embed_shape[0]] = checkpoint['optimizer_state_dict']['state'][k2]['exp_avg_sq']
-                    checkpoint['optimizer_state_dict']['state'][k2]['exp_avg_sq'] = temp_tensor.detach()
-                else:
-                    raise ValueError("Tensor shape mismatch")
+
+            if k_r is not None:
+                temp_tensor = torch.zeros_like(kge_model.relation_embedding)
+                temp_tensor[:nrelation_old] = checkpoint['optimizer_state_dict']['state'][k_r]['exp_avg']
+                checkpoint['optimizer_state_dict']['state'][k_r]['exp_avg'] = temp_tensor.detach()
+                temp_tensor = torch.zeros_like(kge_model.relation_embedding)
+                temp_tensor[:nrelation_old] = checkpoint['optimizer_state_dict']['state'][k_r]['exp_avg_sq']
+                checkpoint['optimizer_state_dict']['state'][k_r]['exp_avg_sq'] = temp_tensor.detach()
 
         kge_model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        if args.smart_init and nentity_new > 0:
+            logging.info('Beginning smart init...')
+            kge_model.entity_embedding_new.data = kge_model.edge_init(kge_model, new_train_triples, nrelation_old,
+                                                                      nentity_old, nentity_new, args)
         if args.do_train:
             optimizer = torch.optim.Adam(
                 filter(lambda p: p.requires_grad, kge_model.parameters()),
