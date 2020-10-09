@@ -7,8 +7,8 @@ from utils import read_triple_raw
 
 
 class KBStream:
-    def __init__(self, data_path, stream_init_proportion=0.5, n_stream_updates=10, frac_old_train_samples=0.1,
-                 sample_nbh=False, seed=42):
+    def __init__(self, data_path, test_file_name=None, stream_init_proportion=0.5, n_stream_updates=10,
+                 frac_old_train_samples=0.1, sample_nbh=False, seed=42):
         self.data_path = data_path
         self.stream_init_proportion = stream_init_proportion
         self.n_stream_updates = n_stream_updates
@@ -29,9 +29,12 @@ class KBStream:
                 rid, relation = line.strip().split('\t')
                 self.relation_set.add(relation)
 
+        if test_file_name is None or test_file_name == '':
+            test_file_name = 'test.txt'
+
         self.train_triples = read_triple_raw(os.path.join(data_path, 'train.txt'))
         self.valid_triples = read_triple_raw(os.path.join(data_path, 'valid.txt'))
-        self.test_triples = read_triple_raw(os.path.join(data_path, 'test.txt'))
+        self.test_triples = read_triple_raw(os.path.join(data_path, test_file_name))
         self.kb_state = {'entity2id': {}, 'relation2id': {},
                          'train_triples': [], 'valid_triples': [], 'test_triples': []}
 

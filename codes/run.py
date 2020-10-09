@@ -38,6 +38,7 @@ def parse_args(args=None):
                         help='Region Id for Countries S1/S2/S3 datasets, DO NOT MANUALLY SET')
     
     parser.add_argument('--data_path', type=str, default=None)
+    parser.add_argument('--test_file_name', type=str, default=None)
     parser.add_argument('--model', default='TransE', type=str)
     parser.add_argument('-de', '--double_entity_embedding', action='store_true')
     parser.add_argument('-dr', '--double_relation_embedding', action='store_true')
@@ -463,9 +464,10 @@ def main(args):
     logging.info('Model: %s' % args.model)
     logging.info('Data Path: %s' % args.data_path)
 
-    stream_obj = KBStream(args.data_path, stream_init_proportion=args.stream_init_proportion,
-                          n_stream_updates=args.n_stream_updates, frac_old_train_samples=args.frac_old_train_samples,
-                          sample_nbh=args.sample_nbh, seed=args.stream_seed)
+    stream_obj = KBStream(args.data_path, test_file_name=args.test_file_name,
+                          stream_init_proportion=args.stream_init_proportion, n_stream_updates=args.n_stream_updates,
+                          frac_old_train_samples=args.frac_old_train_samples, sample_nbh=args.sample_nbh,
+                          seed=args.stream_seed)
 
     entity2id, relation2id, known_true_triples, train_triples, valid_triples, test_triples = stream_obj.get_init_kb()
     main_ops(args, entity2id, relation2id, known_true_triples, train_triples,
